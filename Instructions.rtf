@@ -1,0 +1,391 @@
+{\rtf1\ansi\ansicpg1252\deff0\nouicompat{\fonttbl{\f0\fnil\fcharset0 Calibri;}{\f1\fnil\fcharset0 Bahnschrift SemiBold Condensed;}{\f2\fnil\fcharset1 Cambria Math;}{\f3\fnil\fcharset0 Cambria Math;}{\f4\fnil\fcharset2 Symbol;}}
+{\colortbl ;\red79\green129\blue189;}
+{\*\generator Riched20 10.0.19041}{\*\mmathPr\mmathFont2\mwrapIndent1440 }\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\f0\fs22\lang9\par
+\par
+\b\f1\fs56 Setting Up The LanMessenger:\b0\f0\fs22\par
+1:\par
+
+\pard{\pntext\f4\'B7\tab}{\*\pn\pnlvlblt\pnf4\pnindent0{\pntxtb\'B7}}\fi-360\li720\sa200\sl276\slmult1 Press Windows + I to open Settings.\par
+{\pntext\f4\'B7\tab}Go to:\par
+{\pntext\f4\'B7\tab}Network & Internet \f2\u8594?\f0  Status \f2\u8594?\f0  Properties\lang9\par
+{\pntext\f4\'B7\tab}Under\f3  \f0 Network\f3  \f0 profile\f3 , \f0 select\f3  \f0 Private\f3  \f0 instead\f3  \f0 of\f3  \f0 Public\f3 .\f0\par
+
+\pard\sa200\sl276\slmult1\par
+\f3 2:\par
+
+\pard{\pntext\f4\'B7\tab}{\*\pn\pnlvlblt\pnf4\pnindent0{\pntxtb\'B7}}\fi-360\li720\sa200\sl276\slmult1 Enable-PSRemoting -Force\f0\par
+
+\pard\sa200\sl276\slmult1\f3 3:\par
+Switch port\f0\par
+
+\pard{\pntext\f4\'B7\tab}{\*\pn\pnlvlblt\pnf4\pnindent0{\pntxtb\'B7}}\fi-360\li720\sa200\sl276\slmult1\f3 Run PowerShell as Administrator.\f0\par
+{\pntext\f4\'B7\tab}\f3 Type in: \cf1 netsh advfirewall firewall add rule name="LAN Messenger" dir=in                                   action=allow protocol=TCP localport=5050\cf0\f0\par
+
+\pard\sa200\sl276\slmult1\f3 4:\par
+Copy the following code, paste in on VsCode and save the file as "MessengerPython.py".\par
+--->\cf1  import datetime\par
+import tkinter as tk\par
+from tkinter import messagebox, simpledialog, filedialog\par
+import socket\par
+import threading\par
+import json\par
+import os\par
+from PIL import Image, ImageTk  # pip install pillow\par
+\par
+PORT = 5050\par
+BUFFER_SIZE = 1024\par
+DATA_FILE = "lan_messenger_data.json"\par
+\par
+# ---- App runtime flags / objects ----\par
+STOP_EVENT = threading.Event()   # for clean shutdown of server loop\par
+SERVER_SOCKET = None             # we keep a reference to close it on exit\par
+\par
+# ---- Persistent data ----\par
+def _default_data():\par
+    return \{"contacts": \{\}, "chat_history": \{\}, "icons": \{\}\}\par
+\par
+if os.path.exists(DATA_FILE):\par
+    try:\par
+        with open(DATA_FILE, "r") as f:\par
+            data = json.load(f)\par
+            # sanity check minimal structure\par
+            if not isinstance(data, dict):\par
+                data = _default_data()\par
+            for key in ["contacts", "chat_history", "icons"]:\par
+                if key not in data or not isinstance(data[key], dict):\par
+                    data[key] = \{\}\par
+    except Exception:\par
+        data = _default_data()\par
+else:\par
+    data = _default_data()\par
+\par
+def save_data():\par
+    try:\par
+        with open(DATA_FILE, "w") as f:\par
+            json.dump(data, f, indent=2)\par
+    except Exception as e:\par
+        print(f"Save error: \{e\}")\par
+\par
+# ===== SOCKET SERVER (runs in background thread) =====\par
+def start_server():\par
+    global SERVER_SOCKET\par
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\par
+    SERVER_SOCKET = server\par
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\par
+    try:\par
+        server.bind(("", PORT))\par
+        server.listen()\par
+        server.settimeout(1)  # allows checking STOP_EVENT\par
+    except Exception as e:\par
+        print(f"Server error: \{e\}")\par
+        return\par
+\par
+    while not STOP_EVENT.is_set():\par
+        try:\par
+            conn, addr = server.accept()\par
+        except socket.timeout:\par
+            continue\par
+        except OSError:\par
+            # socket closed during shutdown\par
+            break\par
+\par
+        try:\par
+            incoming = conn.recv(BUFFER_SIZE)\par
+            if not incoming:\par
+                conn.close()\par
+                continue\par
+            try:\par
+                incoming_str = incoming.decode(errors="ignore")\par
+            except Exception:\par
+                incoming_str = ""\par
+            if ":" not in incoming_str:\par
+                conn.close()\par
+                continue\par
+\par
+            username, msg = incoming_str.split(":", 1)\par
+            username = username.strip()\par
+            msg = msg.strip()\par
+\par
+            timestamp_full = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")\par
+            timestamp_short = datetime.datetime.now().strftime("%H:%M")\par
+\par
+            # Update contacts and history\par
+            if username:\par
+                if username not in data["contacts"]:\par
+                    data["contacts"][username] = addr[0]\par
+                if username not in data["chat_history"]:\par
+                    data["chat_history"][username] = []\par
+                data["chat_history"][username].append(\{\par
+                    "sender": username,\par
+                    "text": msg,\par
+                    "time": timestamp_full\par
+                \})\par
+                save_data()\par
+\par
+                # Thread-safe UI update\par
+                try:\par
+                    if contact_var.get() == username:\par
+                        root.after(0, insert_message, username, msg, timestamp_short)\par
+                    else:\par
+                        # If it's a new contact or not selected, refresh contact list highlight/update\par
+                        root.after(0, refresh_contacts)\par
+                except Exception:\par
+                    # UI might be gone during shutdown; ignore\par
+                    pass\par
+            conn.close()\par
+        except Exception as e:\par
+            # Ignore errors during shutdown; log otherwise\par
+            if not STOP_EVENT.is_set():\par
+                print(f"Server loop error: \{e\}")\par
+            try:\par
+                conn.close()\par
+            except Exception:\par
+                pass\par
+\par
+    # Cleanup\par
+    try:\par
+        server.close()\par
+    except Exception:\par
+        pass\par
+    SERVER_SOCKET = None\par
+\par
+# ===== MESSAGE SENDING (UI thread) =====\par
+def send_message(event=None):\par
+    username = contact_var.get()\par
+    if not username:\par
+        messagebox.showerror("Error", "Select a contact first.")\par
+        return\par
+    if username not in data["contacts"]:\par
+        messagebox.showerror("Error", "Unknown contact IP.")\par
+        return\par
+\par
+    msg = msg_entry.get().strip()\par
+    if not msg:\par
+        return\par
+\par
+    try:\par
+        ip = data["contacts"][username]\par
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\par
+        s.settimeout(3)\par
+        s.connect((ip, PORT))\par
+        s.send(f"\{my_username\}:\{msg\}".encode())\par
+        s.close()\par
+\par
+        timestamp_full = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")\par
+        timestamp_short = datetime.datetime.now().strftime("%H:%M")\par
+\par
+        if username not in data["chat_history"]:\par
+            data["chat_history"][username] = []\par
+        data["chat_history"][username].append(\{\par
+            "sender": my_username,\par
+            "text": msg,\par
+            "time": timestamp_full\par
+        \})\par
+        save_data()\par
+\par
+        insert_message(my_username, msg, timestamp_short)\par
+        msg_entry.delete(0, tk.END)\par
+\par
+    except Exception as e:\par
+        messagebox.showerror("Error", f"Could not send message: \{e\}")\par
+\par
+# ===== ICON LOADING =====\par
+def load_icon(username, size=32):\par
+    try:\par
+        if username in data["icons"] and os.path.exists(data["icons"][username]):\par
+            img = Image.open(data["icons"][username])\par
+        else:\par
+            img = Image.new("RGB", (size, size), color="#7289DA")  # default icon\par
+        img = img.resize((size, size), Image.LANCZOS)\par
+        return ImageTk.PhotoImage(img)\par
+    except Exception:\par
+        # fallback to a solid icon if image fails\par
+        img = Image.new("RGB", (size, size), color="#7289DA")\par
+        img = img.resize((size, size), Image.LANCZOS)\par
+        return ImageTk.PhotoImage(img)\par
+\par
+# ===== ADD CONTACT =====\par
+def add_contact():\par
+    name = simpledialog.askstring("Add Contact", "Enter contact username:")\par
+    if not name:\par
+        return\par
+    ip = simpledialog.askstring("Add Contact", "Enter contact IP address:")\par
+    if not ip:\par
+        return\par
+\par
+    icon_path = filedialog.askopenfilename(\par
+        title="Choose Contact Icon",\par
+        filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif")]\par
+    )\par
+    if icon_path:\par
+        data["icons"][name] = icon_path\par
+    data["contacts"][name] = ip\par
+    if name not in data["chat_history"]:\par
+        data["chat_history"][name] = []\par
+    save_data()\par
+    refresh_contacts()\par
+\par
+# ===== REFRESH CONTACTS =====\par
+def refresh_contacts():\par
+    # only safe to call from UI thread\par
+    for widget in contact_list_frame.winfo_children():\par
+        widget.destroy()\par
+    for name in sorted(data["contacts"].keys()):\par
+        frame = tk.Frame(contact_list_frame, bg=BG_COLOR)\par
+        frame.pack(fill="x", pady=2)\par
+\par
+        icon_img = load_icon(name)\par
+        lbl_icon = tk.Label(frame, image=icon_img, bg=BG_COLOR)\par
+        lbl_icon.image = icon_img\par
+        lbl_icon.pack(side="left", padx=5)\par
+\par
+        btn = tk.Button(frame, text=name, font=("Segoe UI", 10),\par
+                        fg="white", bg=BG_COLOR, activebackground="#99AAB5",\par
+                        relief="flat", command=lambda n=name: select_contact(n))\par
+        btn.pack(side="left", fill="x", expand=True)\par
+\par
+# ===== SELECT CONTACT =====\par
+def select_contact(name):\par
+    contact_var.set(name)\par
+    load_chat_history()\par
+\par
+# ===== LOAD CHAT HISTORY =====\par
+def load_chat_history():\par
+    chat_log.config(state="normal")\par
+    chat_log.delete(1.0, tk.END)\par
+    username = contact_var.get()\par
+    if username in data["chat_history"]:\par
+        for msg in data["chat_history"][username]:\par
+            full_time = msg.get("time", "")\par
+            try:\par
+                time_display = datetime.datetime.strptime(full_time, "%Y-%m-%d %H:%M:%S").strftime("%H:%M")\par
+            except Exception:\par
+                time_display = "??:??"\par
+            insert_message(msg.get("sender", "Unknown"), msg.get("text", ""), time_display)\par
+    chat_log.config(state="disabled")\par
+\par
+# ===== INSERT MESSAGE WITH ICON & TIME =====\par
+def insert_message(sender, text, time_str):\par
+    # must be called on UI thread (we ensure that with root.after from server)\par
+    if not chat_log.winfo_exists():\par
+        return\par
+    chat_log.config(state="normal")\par
+    icon_img = load_icon(sender, size=24)\par
+    chat_log.image_create(tk.END, image=icon_img)\par
+    chat_log.insert(tk.END, f" \{sender\} [\{time_str\}]: \{text\}\\n")\par
+    # prevent image GC\par
+    chat_log.image_store = getattr(chat_log, "image_store", []) + [icon_img]\par
+    chat_log.config(state="disabled")\par
+    # auto-scroll to end\par
+    chat_log.see(tk.END)\par
+\par
+# ===== APP INIT =====\par
+root = tk.Tk()\par
+root.withdraw()\par
+my_username = simpledialog.askstring("Your Username", "Enter your username:")\par
+root.deiconify()\par
+if not my_username:\par
+    messagebox.showerror("Error", "Username is required!")\par
+    root.destroy()\par
+    raise SystemExit()\par
+\par
+# Theme colors\par
+BG_COLOR = "#2C2F33"\par
+MSG_BG = "#23272A"\par
+BTN_COLOR = "#7289DA"\par
+TEXT_COLOR = "#FFFFFF"\par
+\par
+root.title(f"LAN Messenger - \{my_username\}")\par
+root.geometry("700x500")\par
+root.configure(bg=BG_COLOR)\par
+\par
+# ===== DELETE CONTACT =====\par
+def delete_contact():\par
+    name = contact_var.get()\par
+    if not name:\par
+        messagebox.showerror("Error", "No contact selected.")\par
+        return\par
+    confirm = messagebox.askyesno("Delete Contact", f"Are you sure you want to delete '\{name\}'?")\par
+    if confirm:\par
+        if name in data["contacts"]:\par
+            del data["contacts"][name]\par
+        if name in data["chat_history"]:\par
+            del data["chat_history"][name]\par
+        if name in data["icons"]:\par
+            del data["icons"][name]\par
+        save_data()\par
+        contact_var.set("")\par
+        refresh_contacts()\par
+        chat_log.config(state="normal")\par
+        chat_log.delete(1.0, tk.END)\par
+        chat_log.config(state="disabled")\par
+        messagebox.showinfo("Deleted", f"Contact '\{name\}' has been deleted.")\par
+\par
+# ===== CONTACT SIDEBAR =====\par
+contact_frame = tk.Frame(root, bg=BG_COLOR, width=180)\par
+contact_frame.pack(side="left", fill="y")\par
+\par
+contact_title = tk.Label(contact_frame, text="Contacts", bg=BG_COLOR, fg=TEXT_COLOR, font=("Segoe UI", 12, "bold"))\par
+contact_title.pack(pady=5)\par
+\par
+contact_list_frame = tk.Frame(contact_frame, bg=BG_COLOR)\par
+contact_list_frame.pack(fill="y", expand=True)\par
+\par
+add_contact_btn = tk.Button(contact_frame, text="+ Add", bg=BTN_COLOR, fg="white", relief="flat",\par
+                            font=("Segoe UI", 10), command=add_contact)\par
+add_contact_btn.pack(fill="x", pady=(5, 2))\par
+\par
+delete_contact_btn = tk.Button(contact_frame, text="\endash  Delete", bg="#FF5555", fg="white", relief="flat",\par
+                               font=("Segoe UI", 10), command=delete_contact)\par
+delete_contact_btn.pack(fill="x", pady=(0, 5))\par
+\par
+# ===== Chat area =====\par
+chat_frame = tk.Frame(root, bg=MSG_BG)\par
+chat_frame.pack(side="right", fill="both", expand=True)\par
+\par
+chat_log = tk.Text(chat_frame, bg=MSG_BG, fg=TEXT_COLOR, font=("Segoe UI", 10),\par
+                   relief="flat", wrap="word", state="disabled")\par
+chat_log.pack(fill="both", expand=True, pady=(5, 0), padx=5)\par
+\par
+msg_frame = tk.Frame(chat_frame, bg=MSG_BG)\par
+msg_frame.pack(fill="x", pady=5)\par
+\par
+msg_entry = tk.Entry(msg_frame, font=("Segoe UI", 10), bg="#99AAB5", fg="black", relief="flat")\par
+msg_entry.pack(side="left", fill="x", expand=True, padx=(5, 2), pady=2)\par
+msg_entry.bind("<Return>", send_message)  # Press Enter to send\par
+\par
+send_btn = tk.Button(msg_frame, text="Send", bg=BTN_COLOR, fg="white", relief="flat",\par
+                     font=("Segoe UI", 10, "bold"), command=send_message)\par
+send_btn.pack(side="right", padx=(2, 5), pady=2)\par
+\par
+contact_var = tk.StringVar(root)\par
+refresh_contacts()\par
+\par
+# ===== Graceful close handler =====\par
+def on_closing():\par
+    # stop server loop and close socket\par
+    STOP_EVENT.set()\par
+    try:\par
+        if SERVER_SOCKET is not None:\par
+            try:\par
+                SERVER_SOCKET.shutdown(socket.SHUT_RDWR)\par
+            except Exception:\par
+                pass\par
+            try:\par
+                SERVER_SOCKET.close()\par
+            except Exception:\par
+                pass\par
+    except Exception:\par
+        pass\par
+    root.destroy()\par
+\par
+root.protocol("WM_DELETE_WINDOW", on_closing)\par
+\par
+# Start server thread\par
+server_thread = threading.Thread(target=start_server, daemon=True)\par
+server_thread.start()\par
+\par
+root.mainloop()\par
+}
+ 
